@@ -108,7 +108,7 @@
           },
           render: function * (ctx, emitter) {
               const r = this.liquid.renderer
-              let collection = ctx.environments[this.collection]
+              let collection = this.liquid.evalValueSync(this.collection, ctx)
 
               if (!collection || !collection.length) {
                   return
