@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Report Template Editor</title>
+    <style type="text/css" media="screen">
+      #container {
+          position: absolute;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          left: 0;
+      }
+      .editor {
+          height: 450px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div style="display:flex;">
+        <div style="display:flex;flex-direction:column;flex:1;">
+          <div>
+            <h3>Template (Liquid HTML)</h3>
+            <div id="template" class="editor"></div>
+          </div>
+          <div>
+            <h3>Input (JSON)</h3>
+            <div id="input" class="editor"></div>
+          </div>
+        </div>
+        <div style="flex:1;">
+          <h3>Output</h3>
+          <div style="background:#f1f1f1;padding:20px;">
+            <div id="output" style="background:white;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/liquidjs/dist/liquid.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/ace.js" type="text/javascript" charset="utf-8"></script>
+    <script>
+      function asHoursAndMinutes(number, asDecimal) {
+          if (asDecimal) {
+              return "" + number;
+          }
+          const hours = number | 0;
+          const minutes = Math.round((number - hours) * 60);
+          return [hours, ":", (minutes < 10 ? "0" : ""), minutes].join("");
+      }
+
+      function format(input, language) {
+          if ("string" === typeof input && -1 !== input.indexOf(":")) {
+              return input;
+          }
+          const number = parseFloat(input);
+          const lang = language || "de";
+          const integerPart = number | 0;
+          const decimalPart = Math.round((number - integerPart) * 100)
+          const arr = [integerPart, (decimalPart < 10 ? "0" : "") + decimalPart];
+          if (lang === "de") {
+              return arr.join(",");
+          }
+          return arr.join(".");
+      }
+
+      function sum(arr) {
+          return "" + arr.reduce((x, y) => x + y, 0);
+      }
+
+      function groupBy(arr, paths) {
+          return arr.reduce((groups, input) => {
+              const key = paths.map(path => path.reduce((obj, k) => obj[k], input)).join(",");
+              const values = groups[key];
+              return { ...groups, [key]: values ? [...values, input] : [input] };
+          }, {})
+      }
+    </script>
+    <script>
+      const engine = new liquidjs.Liquid();
+      engine.registerFilter("as_hours_and_minutes", (number, asDecimal) => asHoursAndMinutes(number, asDecimal));
+      engine.registerFilter("format", (input, language) => format(input, language));
+      engine.registerFilter("sum", sum);
+
+      // Usage: {% group arr by arg1 arg2 %}
+      engine.registerTag("group", {
+          parse: function(token, remainTokens) {
+
+              const tokenizer = new liquidjs.Tokenizer(token.args)
+
+              const collection = tokenizer.readWord()
+              const byStr = tokenizer.readWord()
+              const paths = tokenizer.remaining().trim().split(/\s+/g).map(x => x.split("."))
+
+              this.collection = collection.content
+              this.paths = paths
+              this.templates = []
+
+              let p
+              const stream = this.liquid.parser.parseStream(remainTokens)
+                    .on("start", () => (p = this.templates))
+                    .on("tag:endgroup", () => stream.stop())
+                    .on("template", tpl => p.push(tpl))
+                    .on("end", () => {
+                        throw new Error(`tag ${token.getText()} not closed`)
+                    })
+
+              stream.start();
+          },
+          render: function * (ctx, emitter) {
+              const r = this.liquid.renderer
+              let collection = ctx.environments[this.collection]
+
+              if (!collection || !collection.length) {
+                  return
+              }
+
+              const scope = { group: { } }
+              ctx.push(scope)
+              const groups = groupBy(collection, this.paths)
+              for (let key of Object.keys(groups)) {
+                  scope["group"] = {
+                      _key: key,
+                      _items: groups[key]
+                  }
+                  yield r.renderTemplates(this.templates, ctx, emitter)
+                  if (emitter.break) {
+                      emitter.break = false
+                      break
+                  }
+                  emitter.continue = false
+              }
+              ctx.pop()
+          }
+      });
+
+      const templateEditor = ace.edit("template");
+      templateEditor.session.setMode("ace/mode/liquid");
+      const inputEditor = ace.edit("input");
+      inputEditor.session.setMode("ace/mode/json");
+      const output = document.getElementById("output");
+
+      const callback = (e, target) => {
+          const template = engine.parse(templateEditor.getValue());
+          const input = JSON.parse(inputEditor.getValue() || "{}")
+          engine.render(template, input).then(html => output.innerHTML = html)
+      }
+
+      templateEditor.on("input", callback);
+      inputEditor.on("input", callback);
+    </script>
+  </body>
+</html>
